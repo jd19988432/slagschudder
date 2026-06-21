@@ -2,13 +2,14 @@ import streamlit as st
 import cv2
 import numpy as np
 import tempfile
-from streamlit_image_crop import streamlit_image_crop
+from PIL import Image
+from streamlit_cropper import st_cropper  # De juiste, up-to-date bibliotheek
 
 # Pagina-instellingen voor mobiel gebruik
 st.set_page_config(page_title="FoodeQ Handmatige Slagmeter", layout="centered")
 
 st.title("📹 FoodeQ Slagmeter (Met Stip-Selectie)")
-st.write("Upload je video en geef daarna handmatig aan waar de stip zit.")
+st.write("Upload een korte video en sleep het kader over de trillende stip.")
 
 # --- SIDEBAR CONFIGURATIE ---
 st.sidebar.header("⚙️ Instellingen")
@@ -31,45 +32,44 @@ if geüploade_video is not None:
     cap = cv2.VideoCapture(tfile.name)
     ret, eerste_frame = cap.read()
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release() # Sluit hem direct weer af voor hergebruik zo meteen
+    cap.release()
     
     if ret:
-        # Zet het eerste frame om naar RGB zodat Streamlit het begrijpt
+        # Omzetten van OpenCV (BGR) naar PIL Image voor de cropper
         eerste_frame_rgb = cv2.cvtColor(eerste_frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(eerste_frame_rgb)
         
         st.subheader("📍 Stap 1: Sleep het vakje over de trillende stip")
-        st.write("Gebruik de tool hieronder om in te zoomen op alléén de stip die je wilt meten.")
+        st.write("Snijd de afbeelding zo bij dat ALLEEN de trillende stip (de ovaal) in het vak valt.")
         
-        # De interactieve cropper. Dit geeft de coördinaten (ROI) terug van wat je selecteert
-        cropped_box = streamlit_image_crop(
-            eerste_frame_rgb,
-            box_color='#00FF00',
-            aspect_ratio=None # Vrij slepen, geen vaste vierkant-verhouding verplicht
-        )
+        # De interactieve cropper tool (geeft direct de uitgesneden PIL Image terug)
+        # We zetten aspect_ratio op None zodat je vrij kunt slepen
+        cropped_pil_img = st_cropper(pil_img, realtime_update=True, box_color='#00FF00', aspect_ratio=None)
         
-        # Als de gebruiker een selectie heeft gemaakt, kunnen we gaan rekenen
-        if cropped_box:
-            # Haal de exacte pixel-coördinaten op uit de selectie tool
-            # De tool geeft percentages of direct pixels terug, we rekenen het om naar exacte matrix-indices
-            h_orig, w_orig, _ = eerste_frame.shape
+        if cropped_pil_img:
+            # Bereken de coördinaten en de schaal van het uitgesneden stuk ten opzichte van het origineel
+            # st_cropper geeft de uitgesneden afbeelding, we zoeken de locatie in het origineel
+            cropped_cv_img = cv2.cvtColor(np.array(cropped_pil_img), cv2.COLOR_RGB2BGR)
             
-            xmin = int(cropped_box['left'] * w_orig)
-            ymin = int(cropped_box['top'] * h_orig)
-            xmax = int((cropped_box['left'] + cropped_box['width']) * w_orig)
-            ymax = int((cropped_box['top'] + cropped_box['height']) * h_orig)
+            # Vind waar het uitgesneden stuk zich bevindt via sjabloon-matching (Template Matching)
+            # Dit is de meest foutloze manier om de exacte ROI-coördinaten terug te krijgen
+            res = cv2.matchTemplate(eerste_frame, cropped_cv_img, cv2.TM_SQDIFF)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
             
-            # Zorg dat de waarden binnen de video-grenzen blijven
-            xmin, ymin = max(0, xmin), max(0, ymin)
-            xmax, ymax = min(w_orig, xmax), min(h_orig, ymax)
+            # Dit zijn de exacte pixelcoördinaten van jouw getrokken vakje
+            xmin, ymin = min_loc
+            h_crop, w_crop, _ = cropped_cv_img.shape
+            xmax, ymax = xmin + w_crop, ymin + h_crop
             
-            if st.button("🚀 Start Analyse op Geselecteerde Stip"):
+            st.subheader("📍 Stap 2: Start de berekening")
+            if st.button("🚀 Analyseer Video binnen dit vak"):
                 # Open de video opnieuw voor de volledige frame-voor-frame analyse
                 cap = cv2.VideoCapture(tfile.name)
                 slagen_lijst = []
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                status_text.info("De geselecteerde stip wordt nu frame voor frame geanalyseerd...")
+                status_text.info("De video wordt nu specifiek binnen jouw selectievak geanalyseerd...")
                 
                 frame_count = 0
                 voorbeeld_frame = None
@@ -81,23 +81,22 @@ if geüploade_video is not None:
                         
                     frame_count += 1
                     
-                    # KRUCIALESTAP: We snijden ELK frame exact zo uit als jij hebt aangegeven
+                    # Snijd exact jouw vakje uit elk frame van de video
                     roi = frame[ymin:ymax, xmin:xmax]
                     h_roi, w_roi, _ = roi.shape
                     
-                    # Beeldbewerking ALLEEN op het kleine uitgesneden vakje
+                    # Beeldbewerking ALLEEN op jouw geselecteerde stip
                     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
                     blur = cv2.GaussianBlur(gray, (5, 5), 0)
                     _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                     
                     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     
-                    # Omdat het vakje nu heel klein is, is de grootste contour gegarandeerd jouw stip!
                     grootste_contour = None
                     max_area = 0
                     for cnt in contours:
                         area = cv2.contourArea(cnt)
-                        if area > max_area and area > 20: # Zelfs kleine selecties werken nu
+                        if area > max_area and area > 15:
                             max_area = area
                             grootste_contour = cnt
                     
@@ -113,17 +112,14 @@ if geüploade_video is not None:
                             slag_mm = (h - w) / pixels_per_mm
                             slagen_lijst.append(slag_mm)
                             
-                            # Sla een visueel voorbeeld op van het eerste frame
+                            # Sla een visueel voorbeeld op van de meting
                             if voorbeeld_frame is None:
                                 box = cv2.boxPoints(rect)
                                 box = np.intp(box)
-                                # Teken de groene box in de ROI
                                 cv2.drawContours(roi, [box], 0, (0, 255, 0), 3)
-                                # Plak de ROI terug in het originele frame voor een mooi screenshot
                                 frame[ymin:ymax, xmin:xmax] = roi
                                 voorbeeld_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
-                    # Update voortgangsbalk
                     if total_frames > 0:
                         progress = min(frame_count / total_frames, 1.0)
                         progress_bar.progress(progress)
@@ -143,10 +139,10 @@ if geüploade_video is not None:
                         st.metric(label="Berekende Gemiddelde Slag", value=f"{round(gemiddelde_slag, 1)} mm")
                         
                         if voorbeeld_frame is not None:
-                            st.image(voorbeeld_frame, caption="Visuele controle (Groene box staat nu exact in jouw selectievak)", use_container_width=True)
+                            st.image(voorbeeld_frame, caption="Groene box staat nu exact op de stip in jouw selectievak", use_container_width=True)
                     else:
-                        st.warning("Geen realistische metingen kunnen doen binnen het geselecteerde vak.")
+                        st.warning("Geen stabiele metingen kunnen doen. Was de video stabiel gefilmd?")
                 else:
-                    st.error("⚠️ Het lukte niet om de stip binnen jouw geselecteerde vak te isoleren. Maak het vak iets ruimer om de trillende stip heen.")
+                    st.error("⚠️ Kon de stip niet isoleren. Sleep het kader iets ruimer om de stip heen.")
     else:
-        st.error("Kon de video niet openen om het eerste frame te laden.")
+        st.error("Kon de video niet inladen.")
