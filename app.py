@@ -19,11 +19,10 @@ stip_maat = st.sidebar.number_input(
 )
 
 # --- VIDEO INPUT ---
-# 'video_input' opent op mobiel direct de camera in VIDEO-modus of laat je een bestand kiezen
 geüploade_video = st.file_uploader("Upload of maak een video-opname", type=["mp4", "mov", "avi"])
 
 if geüploade_video is not None:
-    # Omdat OpenCV een bestandspad nodig heeft, slaan we de geüploade video tijdelijk op
+    # Sla de geüploade video tijdelijk op
     tfile = tempfile.NamedTemporaryFile(delete=False) 
     tfile.write(geüploade_video.read())
     
@@ -32,14 +31,18 @@ if geüploade_video is not None:
     
     slagen_lijst = []
     
-    # Voortgangsbalk tonen in Streamlit
-    progress_bar = st.progress(0)
-    total_frames = int(cap.get(cv2.get(cv2.CAP_PROP_FRAME_COUNT)))
+    # Gecorrigeerde OpenCV eigenschap om frames te tellen
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    if total_frames == 0:
-        total_frames = 100 # Fallback voor sommige mobiele formaten
+    # Robuuste fallback: als de smartphone/browser de framecount niet doorgeeft,
+    # schatten we deze op basis van een video van ~3 seconden (ongeveer 90 frames)
+    if total_frames <= 0:
+        total_frames = 90
         
-    st.info("De video wordt frame voor frame geanalyseerd...")
+    # Voortgangsbalk en statusbericht tonen in Streamlit
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    status_text.info("De video wordt frame voor frame geanalyseerd...")
     
     frame_count = 0
     voorbeeld_frame = None
@@ -52,7 +55,7 @@ if geüploade_video is not None:
         frame_count += 1
         h_img, w_img, _ = frame.shape
         
-        # We analyseren de hele video, maar we filteren de contouren op grootte en vorm
+        # Beeldbewerking naar zwart/wit voor hoog contrast
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -77,7 +80,7 @@ if geüploade_video is not None:
                     slag_mm = (h - w) / pixels_per_mm
                     frame_metingen.append((slag_mm, rect))
         
-        # Als er geldige stippen zijn gevonden in dit frame, neem de meest duidelijke (grootste slag)
+        # Neem de meest duidelijke meting uit dit frame
         if frame_metingen:
             beste_slag, beste_rect = max(frame_metingen, key=lambda x: x[0])
             slagen_lijst.append(beste_slag)
@@ -89,19 +92,18 @@ if geüploade_video is not None:
                 cv2.drawContours(frame, [box], 0, (0, 255, 0), 4)
                 voorbeeld_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-        # Update de progressbar elke 10 frames om de app snel te houden
-        if frame_count % 10 == 0:
-            progress = min(frame_count / total_frames, 1.0)
-            progress_bar.progress(progress)
+        # Update de progressbar (zorg dat deze nooit boven de 1.0/100% uitschiet)
+        progress = min(frame_count / total_frames, 1.0)
+        progress_bar.progress(progress)
 
     cap.release()
     progress_bar.progress(1.0)
+    status_text.empty() # Haal het laadbericht weg
 
     # --- RESULTAAT TONEN ---
     if slagen_lijst:
-        # Bereken het gemiddelde, maar filter extreme ruis/fouten eruit via de mediaan of percentiel
-        # Dit zorgt ervoor dat een schokkerig frame de meting niet verpest
-        gefilterde_slagen = [s for s in slagen_lijst if 0.5 < s < 20.0] # Slag ligt realistisch tussen 0.5 en 20mm
+        # Filter extreme uitschieters (bijvoorbeeld door een schok van de hand)
+        gefilterde_slagen = [s for s in slagen_lijst if 0.5 < s < 20.0]
         
         if gefilterde_slagen:
             gemiddelde_slag = np.mean(gefilterde_slagen)
@@ -109,18 +111,16 @@ if geüploade_video is not None:
             
             st.success(f"📋 Analyse voltooid op basis van {len(gefilterde_slagen)} video-frames!")
             
-            # Grote weergave van het eindresultaat
             col1, col2 = st.columns(2)
             with col1:
                 st.metric(label="Gemiddelde Slag (Millimeters)", value=f"{round(gemiddelde_slag, 1)} mm")
             with col2:
                 st.metric(label="Maximale uitslag in video", value=f"{round(max_gemeten, 1)} mm")
             
-            # Toon het voorbeeld-screenshot van de meting
             if voorbeeld_frame is not None:
-                st.image(voorbeeld_frame, caption="Visuele controle van de computervisie (Groene box op de stip)", use_container_width=True)
+                st.image(voorbeeld_frame, caption="Visuele controle (Groene box op de stip)", use_container_width=True)
         else:
-            st.warning("De video bevatte frames, maar de waarden waren niet realistisch. Was de sticker goed in beeld?")
+            st.warning("De video bevat frames, maar de waarden waren niet realistisch.")
     else:
         st.error("⚠️ Het is niet gelukt om de trillende stip in de video te isoleren.")
         st.write("Zorg ervoor dat de video scherp is, de sticker goed verlicht is en dat je dichtbij genoeg filmt.")
