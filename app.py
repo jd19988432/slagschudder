@@ -98,7 +98,7 @@ ctx = webrtc_streamer(
     # Gebruik de moderne 'video_processor_factory' in plaats van transformer
     video_processor_factory=FoodeqStipProcessor,
     rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False}
+    media_stream_constraints={"video": {"facingMode": {"exact": "environment"}}, "audio": False}
 )
 
 # Geef de sidebar-instelling live door aan de video_processor (moderne manier)
