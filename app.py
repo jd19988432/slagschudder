@@ -66,7 +66,6 @@ if geüploade_video is not None:
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # Filter uit: te kleine stofjes en te grote achtergrondvlakken
             if 150 < area < (h_img * w_img * 0.1):
                 rect = cv2.minAreaRect(cnt)
                 (cx, cy), (w, h), angle = rect
@@ -74,7 +73,6 @@ if geüploade_video is not None:
                 if w > h:
                     w, h = h, w
                 
-                # De stip moet door het trillen een ovaal zijn geworden (h/w > 1.1)
                 if w > 0 and (h / w) > 1.1:
                     pixels_per_mm = w / stip_maat
                     slag_mm = (h - w) / pixels_per_mm
@@ -85,14 +83,16 @@ if geüploade_video is not None:
             beste_slag, beste_rect = max(frame_metingen, key=lambda x: x[0])
             slagen_lijst.append(beste_slag)
             
-            # Sla het allereerste frame waar we een meting op doen op als visueel voorbeeld
+            # Sla het allereerste frame op als visueel voorbeeld
             if voorbeeld_frame is None:
+                # GECORRIGEERD: Veilig omzetten van de box coördinaten naar 32-bit integers
                 box = cv2.boxPoints(beste_rect)
-                box = np.int0(box)
+                box = np.intp(box)  # np.intp vervangt het verouderde np.int0
+                
                 cv2.drawContours(frame, [box], 0, (0, 255, 0), 4)
                 voorbeeld_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-        # Update de progressbar (zorg dat deze nooit boven de 1.0/100% uitschiet)
+        # Update de progressbar
         progress = min(frame_count / total_frames, 1.0)
         progress_bar.progress(progress)
 
